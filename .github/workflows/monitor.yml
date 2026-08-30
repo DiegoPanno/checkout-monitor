@@ -2,9 +2,7 @@ name: Monitor Checkout Ambito
 
 on:
   schedule:
-    # Se ejecuta automáticamente cada 1 hora
     - cron: '0 * * * *'
-  # Permite ejecutarlo a mano cuando quieras desde la web de GitHub
   workflow_dispatch:
 
 jobs:
@@ -30,4 +28,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+          WHATSAPP_APIKEY: ${{ secrets.WHATSAPP_APIKEY }}
         run: node monitor.js

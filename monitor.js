@@ -1,10 +1,11 @@
 import { chromium } from 'playwright';
 import 'dotenv/config';
 import fs from 'fs';
-import cron from 'node-cron';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const WA_PHONE = process.env.WHATSAPP_PHONE;
+const WA_APIKEY = process.env.WHATSAPP_APIKEY;
 
 const PRODUCTS_TO_TEST = [
   {
@@ -22,6 +23,19 @@ const SHIPPING_ZONES = [
   { name: 'La Florida (Buenos Aires)', postalCode: '1879' }
 ];
 
+async function sendWhatsAppAlert(text) {
+  if (!WA_PHONE || !WA_APIKEY) return;
+  const encodedText = encodeURIComponent(text);
+  const url = `https://api.callmebot.com/whatsapp.php?phone=${WA_PHONE}&text=${encodedText}&apikey=${WA_APIKEY}`;
+
+  try {
+    const res = await fetch(url);
+    if (res.ok) console.log('📲 Alerta enviada por WhatsApp.');
+  } catch (err) {
+    console.error('Error enviando a WhatsApp:', err.message);
+  }
+}
+
 async function sendTelegramAlert(message) {
   if (!BOT_TOKEN || !CHAT_ID) return;
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
@@ -29,33 +43,10 @@ async function sendTelegramAlert(message) {
     await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: message,
-        parse_mode: 'Markdown'
-      })
+      body: JSON.stringify({ chat_id: CHAT_ID, text: message, parse_mode: 'Markdown' })
     });
   } catch (err) {
-    console.error('Error enviando texto a Telegram:', err.message);
-  }
-}
-
-async function sendTelegramPhoto(imagePath, caption) {
-  if (!BOT_TOKEN || !CHAT_ID || !fs.existsSync(imagePath)) return;
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
-  try {
-    const fileBuffer = fs.readFileSync(imagePath);
-    const blob = new Blob([fileBuffer], { type: 'image/png' });
-
-    const formData = new FormData();
-    formData.append('chat_id', CHAT_ID);
-    formData.append('photo', blob, 'error.png');
-    formData.append('caption', caption);
-
-    await fetch(url, { method: 'POST', body: formData });
-    console.log('📸 Captura enviada a Telegram.');
-  } catch (err) {
-    console.error('Error enviando captura a Telegram:', err.message);
+    console.error('Error enviando a Telegram:', err.message);
   }
 }
 
@@ -63,6 +54,7 @@ async function runCheckoutAudit() {
   console.log(`\n⏰ [${new Date().toLocaleTimeString('es-AR')}] Iniciando ciclo de auditoría...`);
 
   const browser = await chromium.launch({ headless: true });
+  let hasErrors = false;
 
   for (const product of PRODUCTS_TO_TEST) {
     for (const zone of SHIPPING_ZONES) {
@@ -75,10 +67,8 @@ async function runCheckoutAudit() {
       try {
         console.log(`\n🔍 Auditando: ${product.name} | Zona: ${zone.name} (${zone.postalCode})`);
 
-        // 1. Cargar la PDP
         await page.goto(product.url, { timeout: 40000, waitUntil: 'domcontentloaded' });
 
-        // 2. Simular cálculo de envío en PDP si el input está disponible
         const zipInput = page.locator('input[placeholder*="código postal" i], input[placeholder*="CP" i], input[name*="postalCode" i]').first();
         if (await zipInput.isVisible({ timeout: 4000 }).catch(() => false)) {
           await zipInput.fill(zone.postalCode);
@@ -86,39 +76,34 @@ async function runCheckoutAudit() {
           await page.waitForTimeout(2000);
         }
 
-        // 3. Localizar y hacer clic en el botón de compra
         const buyButton = page.locator('button:has-text("Comprar"), button:has-text("Agregar al carrito"), .vtex-add-to-cart-button-0-x-buttonText').first();
         await buyButton.waitFor({ state: 'visible', timeout: 15000 });
-        
-        // Escuchar la petición de agregado al carrito de VTEX en paralelo al clic
+
         const [orderFormResponse] = await Promise.all([
           page.waitForResponse(resp => resp.url().includes('/checkout/pub/orderForm') || resp.url().includes('/items'), { timeout: 20000 }).catch(() => null),
           buyButton.click()
         ]);
 
-        // 4. Validar que se haya agregado al carrito o que abra el minicart
         await page.waitForTimeout(2000);
         const minicartVisible = await page.locator('.vtex-minicart-2-x-drawer, .vtex-minicart-2-x-container, a[href*="/checkout"]').first().isVisible({ timeout: 5000 }).catch(() => false);
 
         if (!orderFormResponse && !minicartVisible) {
-          throw new Error('El botón de compra no disparó la orden de pedido ni abrió el minicart.');
+          throw new Error('El botón de compra no abrió el minicart ni actualizó la orden.');
         }
 
         console.log(`✅ OK: ${product.name} validado para ${zone.name}`);
       } catch (error) {
+        hasErrors = true;
         console.error(`❌ Fallo en ${product.name} (${zone.name}):`, error.message);
-
-        const screenshotPath = `error_${zone.postalCode}.png`;
-        await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => null);
 
         const errorMsg = `🚨 *ALERTA: Error en Tienda Ámbito*\n\n` +
                          `*Producto:* ${product.name}\n` +
                          `*Zona:* ${zone.name} (${zone.postalCode})\n` +
-                         `*Detalle:* \`${error.message}\`\n` +
+                         `*Error:* ${error.message}\n` +
                          `*Hora:* ${new Date().toLocaleTimeString('es-AR')}`;
 
         await sendTelegramAlert(errorMsg);
-        await sendTelegramPhoto(screenshotPath, `Fallo detectado: ${zone.name}`);
+        await sendWhatsAppAlert(errorMsg);
       } finally {
         await context.close();
       }
@@ -126,13 +111,15 @@ async function runCheckoutAudit() {
   }
 
   await browser.close();
+
+  // Reporte diario: si la corrida ocurre a las 09:00 AM (UTC-3 hora de Argentina)
+  const currentHourAR = (new Date().getUTCHours() - 3 + 24) % 24;
+  if (!hasErrors && currentHourAR === 9) {
+    const dailyStatus = `✅ *Reporte Diario Tienda Ámbito*\n\nEl monitor automático está activo y el checkout operó con normalidad en todas las zonas.`;
+    await sendWhatsAppAlert(dailyStatus);
+  }
+
   console.log('\n🏁 Ciclo de monitoreo completado.');
 }
 
-// Ejecución inmediata
 runCheckoutAudit();
-
-// Se ejecutará automáticamente en el minuto 0 de cada hora (ej: 10:00, 11:00, 12:00)
-cron.schedule('0 * * * *', () => {
-  runCheckoutAudit();
-});
