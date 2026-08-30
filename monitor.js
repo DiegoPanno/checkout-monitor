@@ -141,28 +141,36 @@ async function auditCheckoutScenario(browser, scenario) {
     await buyButton.waitFor({ state: 'visible', timeout: 15000 });
     await buyButton.click();
 
-    // 3. Ir al Checkout si no redirige automáticamente
-    await page.waitForTimeout(2000);
+    // 3. Esperar e ir directo a la URL de checkout
+    await page.waitForTimeout(2500);
     if (!page.url().includes('/checkout')) {
-      const cartButton = page.locator('#proceed-to-checkout, a[href*="/checkout"]').first();
-      if (await cartButton.isVisible()) {
-        await cartButton.click();
-      } else {
-        await page.goto(`${BASE_URL}/checkout/#/cart`, { waitUntil: 'domcontentloaded' });
-      }
+      await page.goto(`${BASE_URL}/checkout/#/cart`, { waitUntil: 'networkidle' });
     }
 
-    // 4. Pasar del carrito a Identificación
-    const toOrderButton = page.locator('#cart-to-orderform').first();
+    // 4. Click en "Finalizar compra" desde el carrito
+    const toOrderButton = page.locator('#cart-to-orderform, #proceed-to-checkout, a[href*="/checkout/#/profile"]').first();
     if (await toOrderButton.isVisible()) {
       await toOrderButton.click();
     }
 
-    // 5. Completar Formulario de Identificación (Paso 1)
-    await page.waitForSelector('#client-email', { state: 'visible', timeout: 20000 });
-    await page.fill('#client-email', 'auditoria_monitor@ingacot.com.ar');
-    
-    // Rellenar resto de datos de contacto
+    // 5. Manejar Pre-email si está activo, o completar inputs del formulario
+    await page.waitForTimeout(2000);
+    const preEmail = page.locator('#client-pre-email');
+    const clientEmail = page.locator('#client-email');
+
+    if (await preEmail.isVisible()) {
+      await preEmail.fill('auditoria_monitor@ingacot.com.ar');
+      const btnPreEmail = page.locator('#btn-client-pre-email, #btn-identified-user-button').first();
+      await btnPreEmail.click();
+    } else {
+      await clientEmail.waitFor({ state: 'attached', timeout: 15000 });
+      await clientEmail.evaluate(el => el.value = 'auditoria_monitor@ingacot.com.ar');
+      await clientEmail.dispatchEvent('input');
+      await clientEmail.dispatchEvent('change');
+    }
+
+    // 6. Rellenar datos restantes del perfil
+    await page.waitForTimeout(1000);
     const fnInput = page.locator('#client-first-name');
     if (await fnInput.isVisible()) await fnInput.fill('Auditor');
 
@@ -175,12 +183,13 @@ async function auditCheckoutScenario(browser, scenario) {
     const docInput = page.locator('#client-document');
     if (await docInput.isVisible()) await docInput.fill('32123456');
 
-    // 6. Click en "IR PARA DATOS DE ENVÍO"
-    const btnGoShipping = page.locator('#go-to-shipping, #btn-client-pre-email, button:has-text("IR PARA DATOS DE ENVÍO"), button:has-text("Continuar")').first();
-    await btnGoShipping.waitFor({ state: 'visible', timeout: 10000 });
-    await btnGoShipping.click();
+    // 7. Click en "IR PARA DATOS DE ENVÍO"
+    const btnGoShipping = page.locator('#go-to-shipping, button:has-text("IR PARA DATOS DE ENVÍO"), button:has-text("Continuar")').first();
+    if (await btnGoShipping.isVisible()) {
+      await btnGoShipping.click();
+    }
 
-    // 7. Completar y calcular Código Postal en Envío (Paso 2)
+    // 8. Cargar Código Postal en módulo de Envío
     const postalInput = page.locator('#ship-postalCode, input[name="postalCode"]').first();
     await postalInput.waitFor({ state: 'visible', timeout: 15000 });
     await postalInput.fill(scenario.postalCode);
@@ -190,7 +199,7 @@ async function auditCheckoutScenario(browser, scenario) {
       await calcButton.click();
     }
 
-    // 8. Validar disponibilidad de opciones de flete/retiro
+    // 9. Validar disponibilidad de opciones de entrega
     await page.waitForTimeout(3000);
     
     // Verificar si aparece cartel de bloqueo de código postal
