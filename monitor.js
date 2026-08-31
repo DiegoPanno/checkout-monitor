@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { chromium } from 'playwright';
 import https from 'https';
 import fs from 'fs';
@@ -10,39 +11,40 @@ const BASE_URL = 'https://www.pintureriasambito.com';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Términos para auditar buscador y catálogo
 const SEARCH_TERMS = ['latex', 'impermeabilizante', 'pincel'];
 
-// Escenarios de prueba para Checkout
 const SCENARIOS = [
+  // --- Látex Denver 4 Lts ---
   {
-    productName: 'Látex Denver 20 Lts',
-    url: `${BASE_URL}/latex-interior-denver-20-lts/p`,
+    productName: 'Látex Denver 4 Lts',
+    url: `${BASE_URL}/latex-interior-denver-premium-lavable-4-lts/p`,
     zoneName: 'Mar del Plata',
     postalCode: '7600'
   },
   {
-    productName: 'Látex Denver 20 Lts',
-    url: `${BASE_URL}/latex-interior-denver-20-lts/p`,
+    productName: 'Látex Denver 4 Lts',
+    url: `${BASE_URL}/latex-interior-denver-premium-lavable-4-lts/p`,
     zoneName: 'La Florida (Buenos Aires)',
     postalCode: '1879'
   },
+
+  // --- Membrana Líquida Venier Supercapa 1 Kg Blanco (SKU 1098) ---
   {
-    productName: 'Látex Tersuave Antimanchas 20 Lts',
-    url: `${BASE_URL}/latex-interior-tersuave-lavable-antimanchas-20-lts/p`,
+    productName: 'Membrana Líquida Venier Supercapa 1 Kg Blanco (SKU 1098)',
+    url: `${BASE_URL}/membrana-liquida-venier-supercapa-poliuretanica-1-kg/p?skuId=1098`,
     zoneName: 'Mar del Plata',
     postalCode: '7600'
   },
   {
-    productName: 'Látex Tersuave Antimanchas 20 Lts',
-    url: `${BASE_URL}/latex-interior-tersuave-lavable-antimanchas-20-lts/p`,
+    productName: 'Membrana Líquida Venier Supercapa 1 Kg Blanco (SKU 1098)',
+    url: `${BASE_URL}/membrana-liquida-venier-supercapa-poliuretanica-1-kg/p?skuId=1098`,
     zoneName: 'La Florida (Buenos Aires)',
     postalCode: '1879'
   }
 ];
 
 // ==========================================
-// UTILIDADES DE NOTIFICACIÓN (TELEGRAM)
+// UTILIDADES DE NOTIFICACIÓN
 // ==========================================
 async function sendTelegramMessage(text) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
@@ -107,7 +109,7 @@ async function auditSearch(page) {
   for (const term of SEARCH_TERMS) {
     try {
       console.log(`Buscando término: "${term}"...`);
-      await page.goto(`${BASE_URL}/${term}`, { waitUntil: 'networkidle', timeout: 25000 });
+      await page.goto(`${BASE_URL}/${term}`, { waitUntil: 'domcontentloaded', timeout: 25000 });
       
       const productElements = page.locator('.vtex-search-result-3-x-galleryItem, .vtex-product-summary-2-x-container');
       await productElements.first().waitFor({ state: 'visible', timeout: 10000 });
@@ -133,93 +135,82 @@ async function auditCheckoutScenario(browser, scenario) {
   console.log(`🛒 --- MÓDULO 2 & 3: PDP + Checkout para ${scenarioTitle} ---`);
 
   try {
-    // 1. Navegar a PDP
+    // 1. Navegar a la ficha de producto
     await page.goto(scenario.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // 2. Click en botón Comprar / Agregar al Carrito
+    // 2. Click en botón Comprar
     const buyButton = page.locator('.vtex-add-to-cart-button-0-x-buttonText, button:has-text("Comprar"), button:has-text("Agregar al carrito")').first();
     await buyButton.waitFor({ state: 'visible', timeout: 15000 });
-    await buyButton.click();
-
-    // 3. Esperar e ir directo a la URL de checkout
-    await page.waitForTimeout(2500);
-    if (!page.url().includes('/checkout')) {
-      await page.goto(`${BASE_URL}/checkout/#/cart`, { waitUntil: 'networkidle' });
-    }
-
-    // 4. Click en "Finalizar compra" desde el carrito
-    const toOrderButton = page.locator('#cart-to-orderform, #proceed-to-checkout, a[href*="/checkout/#/profile"]').first();
-    if (await toOrderButton.isVisible()) {
-      await toOrderButton.click();
-    }
-
-    // 5. Manejar Pre-email si está activo, o completar inputs del formulario
-    await page.waitForTimeout(2000);
-    const preEmail = page.locator('#client-pre-email');
-    const clientEmail = page.locator('#client-email');
-
-    if (await preEmail.isVisible()) {
-      await preEmail.fill('auditoria_monitor@ingacot.com.ar');
-      const btnPreEmail = page.locator('#btn-client-pre-email, #btn-identified-user-button').first();
-      await btnPreEmail.click();
-    } else {
-      await clientEmail.waitFor({ state: 'attached', timeout: 15000 });
-      await clientEmail.evaluate(el => el.value = 'auditoria_monitor@ingacot.com.ar');
-      await clientEmail.dispatchEvent('input');
-      await clientEmail.dispatchEvent('change');
-    }
-
-    // 6. Rellenar datos restantes del perfil
-    await page.waitForTimeout(1000);
-    const fnInput = page.locator('#client-first-name');
-    if (await fnInput.isVisible()) await fnInput.fill('Auditor');
-
-    const lnInput = page.locator('#client-last-name');
-    if (await lnInput.isVisible()) await lnInput.fill('Sistema');
-
-    const phoneInput = page.locator('#client-phone');
-    if (await phoneInput.isVisible()) await phoneInput.fill('2234000000');
-
-    const docInput = page.locator('#client-document');
-    if (await docInput.isVisible()) await docInput.fill('32123456');
-
-    // 7. Click en "IR PARA DATOS DE ENVÍO"
-    const btnGoShipping = page.locator('#go-to-shipping, button:has-text("IR PARA DATOS DE ENVÍO"), button:has-text("Continuar")').first();
-    if (await btnGoShipping.isVisible()) {
-      await btnGoShipping.click();
-    }
-
-    // 8. Cargar Código Postal en módulo de Envío
-    const postalInput = page.locator('#ship-postalCode, input[name="postalCode"]').first();
-    await postalInput.waitFor({ state: 'visible', timeout: 15000 });
-    await postalInput.fill(scenario.postalCode);
-
-    const calcButton = page.locator('#shipping-calculate-link, button:has-text("Calcular")').first();
-    if (await calcButton.isVisible()) {
-      await calcButton.click();
-    }
-
-    // 9. Validar disponibilidad de opciones de entrega
-    await page.waitForTimeout(3000);
     
-    // Verificar si aparece cartel de bloqueo de código postal
-    const alertMsg = page.locator('.vtex-omnishipping-1-x-alert, .alert-warning, text="El siguiente ítem no puede enviarse"');
-    if (await alertMsg.isVisible()) {
+    await Promise.all([
+      page.waitForResponse(res => res.url().includes('/orderForm') && res.status() === 200, { timeout: 15000 }).catch(() => null),
+      buyButton.click()
+    ]);
+
+    // 3. Ir a la vista de carrito
+    await page.goto(`${BASE_URL}/checkout/#/cart`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(1500);
+
+    // 4. Inyectar datos directamente en la API de VTEX
+    await page.waitForFunction(() => typeof window.vtexjs !== 'undefined' && window.vtexjs.checkout, { timeout: 20000 });
+
+    const result = await page.evaluate(async (postalCode) => {
+      try {
+        await window.vtexjs.checkout.sendAttachment('clientProfileData', {
+          email: 'auditoria_monitor@ingacot.com.ar',
+          firstName: 'Auditor',
+          lastName: 'Sistema',
+          document: '32123456',
+          phone: '+5492234000000'
+        });
+
+        const orderForm = await window.vtexjs.checkout.sendAttachment('shippingData', {
+          selectedAddresses: [{
+            addressType: 'residential',
+            postalCode: postalCode,
+            country: 'ARG'
+          }]
+        });
+
+        const slas = orderForm?.shippingData?.logisticsInfo?.[0]?.slas || [];
+        return {
+          success: true,
+          slaCount: slas.length,
+          messages: orderForm.messages || []
+        };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    }, scenario.postalCode);
+
+    if (!result.success) {
+      throw new Error(`Fallo al enviar datos a VTEX: ${result.error}`);
+    }
+
+    // 5. Ir a la pantalla de envío para verificar visualmente
+    await page.goto(`${BASE_URL}/checkout/#/shipping`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(2500);
+
+    // 6. Validación de bloqueos
+    const alertWarning = page.getByText(/El siguiente ítem no puede enviarse|no puede enviarse a este código postal/i);
+    if (await alertWarning.isVisible()) {
       throw new Error(`Ítem bloqueado para CP ${scenario.postalCode} ("No puede enviarse a este código postal")`);
     }
 
-    // Validar que se liste la sección de entrega
-    await page.waitForSelector('.vtex-omnishipping-1-x-shippingSectionTitle, .shipping-data, .vtex-omnishipping-1-x-deliveryGroup', { state: 'visible', timeout: 15000 });
-    console.log(`  ✓ Checkout OK para ${scenarioTitle}`);
+    if (result.slaCount === 0) {
+      throw new Error(`Sin opciones de logística / retiro disponibles para CP ${scenario.postalCode} (SLAs = 0)`);
+    }
+
+    console.log(`  ✓ Checkout OK para ${scenarioTitle} (${result.slaCount} opciones disponibles).`);
 
   } catch (err) {
     console.log(`❌ Error en Checkout (${scenarioTitle}): ${err.message}`);
-    
+
     const screenshotPath = `error_${Date.now()}.png`;
     await page.screenshot({ path: screenshotPath, fullPage: true });
 
     const errorCaption = `🚨 <b>Fallo en Checkout Ámbito</b>\n\n<b>Producto:</b> ${scenario.productName}\n<b>Zona:</b> ${scenario.zoneName} (${scenario.postalCode})\n<b>Error:</b> ${err.message}`;
-    
+
     await sendTelegramPhoto(screenshotPath, errorCaption);
     console.log('📸 Captura enviada a Telegram.');
 
@@ -241,9 +232,10 @@ async function auditCheckoutScenario(browser, scenario) {
   const browser = await chromium.launch({ headless: true });
 
   try {
-    const searchPage = await browser.newPage();
+    const searchContext = await browser.newContext();
+    const searchPage = await searchContext.newPage();
     await auditSearch(searchPage);
-    await searchPage.close();
+    await searchContext.close();
 
     for (const scenario of SCENARIOS) {
       await auditCheckoutScenario(browser, scenario);
