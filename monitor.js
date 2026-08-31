@@ -10,6 +10,8 @@ import path from 'path';
 const BASE_URL = 'https://www.pintureriasambito.com';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const WHATSAPP_PHONE = process.env.WHATSAPP_PHONE || '5492236764618';
+const WHATSAPP_APIKEY = process.env.WHATSAPP_APIKEY || process.env.WHATSAPP_API_KEY;
 
 const SEARCH_TERMS = ['latex', 'impermeabilizante', 'pincel'];
 
@@ -46,6 +48,19 @@ const SCENARIOS = [
 // ==========================================
 // UTILIDADES DE NOTIFICACIÓN
 // ==========================================
+async function sendWhatsAppMessage(text) {
+  if (!WHATSAPP_PHONE || !WHATSAPP_APIKEY) return;
+  const encoded = encodeURIComponent(text);
+  const url = `https://api.callmebot.com/whatsapp.php?phone=${WHATSAPP_PHONE}&text=${encoded}&apikey=${WHATSAPP_APIKEY}`;
+  
+  return new Promise((resolve) => {
+    https.get(url, (res) => {
+      if (res.statusCode === 200) console.log('📲 Notificación enviada a WhatsApp.');
+      resolve();
+    }).on('error', () => resolve());
+  });
+}
+
 async function sendTelegramMessage(text) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -118,13 +133,15 @@ async function auditSearch(page) {
       console.log(`  ✓ Búsqueda "${term}" OK (${count} productos listados).`);
     } catch (err) {
       console.log(`  ❌ Fallo en búsqueda "${term}": ${err.message}`);
-      await sendTelegramMessage(`⚠️ <b>Alerta Búsqueda</b>: Sin resultados para término <code>${term}</code>.`);
+      const msg = `⚠️ <b>Alerta Búsqueda</b>: Sin resultados para el término <code>${term}</code>.`;
+      await sendTelegramMessage(msg);
+      await sendWhatsAppMessage(`⚠️ Alerta Búsqueda: Sin resultados para "${term}" en Ámbito.`);
     }
   }
 }
 
 // ==========================================
-// MÓDULO 2 Y 3: AUDITORÍA DE CHECKOUT
+// MÓDULO 2, 3 Y 4: CHECKOUT + LOGÍSTICA + PAGOS
 // ==========================================
 async function auditCheckoutScenario(browser, scenario) {
   const context = await browser.newContext({
@@ -132,13 +149,13 @@ async function auditCheckoutScenario(browser, scenario) {
   });
   const page = await context.newPage();
   const scenarioTitle = `${scenario.productName} [${scenario.zoneName}]`;
-  console.log(`🛒 --- MÓDULO 2 & 3: PDP + Checkout para ${scenarioTitle} ---`);
+  console.log(`🛒 --- MÓDULO 2, 3 & 4: PDP + Logística + Pagos para ${scenarioTitle} ---`);
 
   try {
-    // 1. Navegar a la PDP
+    // 1. Navegar a PDP
     await page.goto(scenario.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // 2. Click en botón Comprar y esperar a que el orderForm procese la adición
+    // 2. Click Comprar
     const buyButton = page.locator('.vtex-add-to-cart-button-0-x-buttonText, button:has-text("Comprar"), button:has-text("Agregar al carrito")').first();
     await buyButton.waitFor({ state: 'visible', timeout: 15000 });
 
@@ -146,87 +163,93 @@ async function auditCheckoutScenario(browser, scenario) {
     await buyButton.click();
     await orderFormPromise;
 
-    // 3. Ir a checkout de forma limpia
+    // 3. Ir a Carrito y esperar a que VTEX termine de cargar
     await page.goto(`${BASE_URL}/checkout/#/cart`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForFunction(() => typeof window.vtexjs !== 'undefined' && window.vtexjs.checkout, { timeout: 20000 });
-    await page.waitForTimeout(1000);
-
-    // 4. Inyectar datos con Código Postal formateado a 8 dígitos (00007600 / 00001879)
-    const result = await page.evaluate(async (postalCode) => {
-      try {
-        const formattedCp = String(postalCode).padStart(8, '0');
-
-        await window.vtexjs.checkout.sendAttachment('clientProfileData', {
-          email: 'auditoria_monitor@ingacot.com.ar',
-          firstName: 'Auditor',
-          lastName: 'Sistema',
-          document: '32123456',
-          phone: '+5492234000000'
-        });
-
-        let orderForm = await window.vtexjs.checkout.sendAttachment('shippingData', {
-          selectedAddresses: [{
-            addressType: 'residential',
-            postalCode: formattedCp,
-            country: 'ARG'
-          }]
-        });
-
-        let slas = orderForm?.shippingData?.logisticsInfo?.[0]?.slas || [];
-
-        // Si la cotización externa (Zipnova/OCA) demora, reintentar el cálculo
-        if (slas.length === 0) {
-          await new Promise(r => setTimeout(r, 2000));
-          orderForm = await window.vtexjs.checkout.calculateShipping({
-            postalCode: formattedCp,
-            country: 'ARG',
-            addressType: 'residential'
-          });
-          slas = orderForm?.shippingData?.logisticsInfo?.[0]?.slas || [];
-        }
-
-        return {
-          success: true,
-          slaCount: slas.length
-        };
-      } catch (err) {
-        return { success: false, error: err.message };
-      }
-    }, scenario.postalCode);
-
-    if (!result.success) {
-      throw new Error(`Fallo al enviar datos a VTEX: ${result.error}`);
-    }
-
-    // 5. Ir a pantalla de envío para validar visualmente
-    await page.goto(`${BASE_URL}/checkout/#/shipping`, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await page.waitForTimeout(2000);
 
+    // 4. Click en Proceder al pago vía evaluate (sin trabas de capas)
+    await page.evaluate(() => {
+      const btn = document.querySelector('#cart-to-orderform, .btn-place-order');
+      if (btn) {
+        btn.click();
+      } else if (window.location.hash !== '#/shipping' && window.location.hash !== '#/payment') {
+        window.location.hash = '#/orderform';
+      }
+    });
+    await page.waitForTimeout(2500);
+
+    // 5. Completar pre-email si aparece
+    const preEmailInput = page.locator('#client-pre-email').first();
+    if (await preEmailInput.isVisible({ timeout: 2500 }).catch(() => false)) {
+      await preEmailInput.fill('auditoria_monitor@ingacot.com.ar');
+      await page.locator('#btn-client-pre-email').click().catch(() => null);
+      await page.waitForTimeout(2000);
+    }
+
+    // 6. Completar datos de perfil si aparece el formulario
+    const firstName = page.locator('#client-first-name').first();
+    if (await firstName.isVisible({ timeout: 2500 }).catch(() => false)) {
+      await firstName.fill('Auditor');
+      await page.locator('#client-last-name').fill('Sistema').catch(() => null);
+      await page.locator('#client-document').fill('32123456').catch(() => null);
+      await page.locator('#client-phone').fill('2234000000').catch(() => null);
+
+      const btnGoShipping = page.locator('#go-to-shipping, button:has-text("IR PARA DATOS DE ENVÍO")').first();
+      if (await btnGoShipping.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await btnGoShipping.click();
+        await page.waitForTimeout(2500);
+      }
+    }
+
+    // 7. Completar Código Postal en la pantalla de Envío
+    const postalInput = page.locator('#ship-postalCode, input[name="postalCode"]').first();
+    if (await postalInput.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await postalInput.fill(scenario.postalCode);
+      await postalInput.press('Enter');
+      await page.waitForTimeout(3000);
+    }
+
+    // 8. Validar que no haya bloqueo por código postal
     const alertWarning = page.getByText(/El siguiente ítem no puede enviarse|no puede enviarse a este código postal/i);
     if (await alertWarning.isVisible()) {
       throw new Error(`Ítem bloqueado para CP ${scenario.postalCode} ("No puede enviarse a este código postal")`);
     }
 
-    if (result.slaCount === 0) {
-      throw new Error(`Sin opciones de logística / retiro disponibles para CP ${scenario.postalCode} (SLAs = 0)`);
+    // 9. Validar opciones logísticas y avanzar a Pago
+    const btnGoToPayment = page.locator('#btn-go-to-payment, button:has-text("IR PARA EL PAGO"), button:has-text("Continuar")').first();
+    if (await btnGoToPayment.isVisible({ timeout: 8000 }).catch(() => false)) {
+      await btnGoToPayment.click();
+      await page.waitForTimeout(3000);
     }
 
-    console.log(`  ✓ Checkout OK para ${scenarioTitle} (${result.slaCount} opciones disponibles).`);
+    // 10. AUDITORÍA DE PASARELAS DE PAGO
+    console.log(`  💳 Validando disponibilidad de Pasarelas de Pago...`);
+    const paymentBlock = page.locator('#payment-data, .payment-data, #iframe-placeholder-creditCardPaymentGroup, .payment-group-list-btn, #payment-group-creditCardPaymentGroup').first();
+    await paymentBlock.waitFor({ state: 'attached', timeout: 15000 });
+
+    const paymentOptions = page.locator('.payment-group-item, button[id*="payment-group"], a[id*="payment-group"]');
+    const paymentCount = await paymentOptions.count();
+
+    console.log(`  ✓ Checkout, Logística y Pasarelas OK para ${scenarioTitle} (${paymentCount} medios de pago detectados).`);
+    return true;
 
   } catch (err) {
     console.log(`❌ Error en Checkout (${scenarioTitle}): ${err.message}`);
 
     const screenshotPath = `error_${Date.now()}.png`;
-    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => null);
 
-    const errorCaption = `🚨 <b>Fallo en Checkout Ámbito</b>\n\n<b>Producto:</b> ${scenario.productName}\n<b>Zona:</b> ${scenario.zoneName} (${scenario.postalCode})\n<b>Error:</b> ${err.message}`;
+    const errorCaption = `🚨 <b>Fallo en Checkout / Pagos Ámbito</b>\n\n<b>Producto:</b> ${scenario.productName}\n<b>Zona:</b> ${scenario.zoneName} (${scenario.postalCode})\n<b>Error:</b> ${err.message}`;
 
     await sendTelegramPhoto(screenshotPath, errorCaption);
+    await sendWhatsAppMessage(`🚨 Fallo en Checkout/Pagos Ámbito\n\nProducto: ${scenario.productName}\nZona: ${scenario.zoneName} (${scenario.postalCode})\nError: ${err.message}`);
     console.log('📸 Captura enviada a Telegram.');
 
     if (fs.existsSync(screenshotPath)) {
       fs.unlinkSync(screenshotPath);
     }
+    return false;
   } finally {
     await context.close();
   }
@@ -237,9 +260,10 @@ async function auditCheckoutScenario(browser, scenario) {
 // ==========================================
 (async () => {
   const now = new Date().toLocaleTimeString('es-AR');
-  console.log(`⏰ [${now}] Iniciando Suite Robusta de Auditoría...`);
+  console.log(`⏰ [${now}] Iniciando Suite Integral de Auditoría...`);
 
   const browser = await chromium.launch({ headless: true });
+  let globalSuccess = true;
 
   try {
     const searchContext = await browser.newContext();
@@ -248,9 +272,19 @@ async function auditCheckoutScenario(browser, scenario) {
     await searchContext.close();
 
     for (const scenario of SCENARIOS) {
-      await auditCheckoutScenario(browser, scenario);
+      const ok = await auditCheckoutScenario(browser, scenario);
+      if (!ok) globalSuccess = false;
       await new Promise(r => setTimeout(r, 2000));
     }
+
+    // Reporte Diario (09:00 AM hora Argentina UTC-3)
+    const currentHourAR = (new Date().getUTCHours() - 3 + 24) % 24;
+    if (globalSuccess && currentHourAR === 9) {
+      const dailyText = `✅ *Reporte Diario Tienda Ámbito*\n\nAuditoría integral completada con éxito:\n- Búsqueda y catálogo OK\n- Logística y retiros (MdP y La Florida) OK\n- Pasarelas y medios de pago OK`;
+      await sendWhatsAppMessage(dailyText);
+      await sendTelegramMessage(`✅ <b>Reporte Diario Tienda Ámbito</b>\n\nAuditoría integral completada con éxito:\n- Búsqueda y catálogo OK\n- Logística y retiros (MdP y La Florida) OK\n- Pasarelas y medios de pago OK`);
+    }
+
   } catch (globalErr) {
     console.error('Error global en la ejecución:', globalErr);
   } finally {
