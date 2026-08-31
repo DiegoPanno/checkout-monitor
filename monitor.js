@@ -168,7 +168,7 @@ async function auditCheckoutScenario(browser, scenario) {
     await page.waitForFunction(() => typeof window.vtexjs !== 'undefined' && window.vtexjs.checkout, { timeout: 20000 });
     await page.waitForTimeout(2000);
 
-    // 4. Click en Proceder al pago vía evaluate (sin trabas de capas)
+    // 4. Click en Proceder al pago vía evaluate (sin bloqueos por capas de carga)
     await page.evaluate(() => {
       const btn = document.querySelector('#cart-to-orderform, .btn-place-order');
       if (btn) {
@@ -277,12 +277,16 @@ async function auditCheckoutScenario(browser, scenario) {
       await new Promise(r => setTimeout(r, 2000));
     }
 
-    // Reporte Diario (09:00 AM hora Argentina UTC-3)
-    const currentHourAR = (new Date().getUTCHours() - 3 + 24) % 24;
-    if (globalSuccess && currentHourAR === 9) {
-      const dailyText = `✅ *Reporte Diario Tienda Ámbito*\n\nAuditoría integral completada con éxito:\n- Búsqueda y catálogo OK\n- Logística y retiros (MdP y La Florida) OK\n- Pasarelas y medios de pago OK`;
-      await sendWhatsAppMessage(dailyText);
-      await sendTelegramMessage(`✅ <b>Reporte Diario Tienda Ámbito</b>\n\nAuditoría integral completada con éxito:\n- Búsqueda y catálogo OK\n- Logística y retiros (MdP y La Florida) OK\n- Pasarelas y medios de pago OK`);
+    // Notificación horaria de estado OK (cada 60 minutos)
+    if (globalSuccess) {
+      const hourlyText = `✅ *Monitor Ámbito: Todo Operativo*\n\n` +
+        `• Búsqueda y catálogo OK\n` +
+        `• Fletes y retiros (MdP y La Florida) OK\n` +
+        `• Pasarelas de pago disponibles OK\n` +
+        `• Hora: ${now}`;
+
+      await sendWhatsAppMessage(hourlyText);
+      await sendTelegramMessage(`✅ <b>Monitor Ámbito: Todo Operativo</b>\n\n• Búsqueda y catálogo OK\n• Fletes y retiros (MdP y La Florida) OK\n• Pasarelas de pago disponibles OK\n• Hora: ${now}`);
     }
 
   } catch (globalErr) {
