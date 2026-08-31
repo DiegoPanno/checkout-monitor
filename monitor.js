@@ -14,7 +14,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const SEARCH_TERMS = ['latex', 'impermeabilizante', 'pincel'];
 
 const SCENARIOS = [
-  // --- Látex Denver 4 Lts ---
+  // --- Látex Denver Premium Lavable 4 Lts ---
   {
     productName: 'Látex Denver 4 Lts',
     url: `${BASE_URL}/latex-interior-denver-premium-lavable-4-lts/p`,
@@ -28,16 +28,16 @@ const SCENARIOS = [
     postalCode: '1879'
   },
 
-  // --- Membrana Líquida Venier Supercapa 1 Kg Blanco (SKU 1098) ---
+  // --- Látex Antihongo Denver Interior/Exterior 4 Lts ---
   {
-    productName: 'Membrana Líquida Venier Supercapa 1 Kg Blanco (SKU 1098)',
-    url: `${BASE_URL}/membrana-liquida-venier-supercapa-poliuretanica-1-kg/p?skuId=1098`,
+    productName: 'Látex Antihongo Denver 4 Lts',
+    url: `${BASE_URL}/latex-antihongo-denver-interior-exterior-4-lts/p`,
     zoneName: 'Mar del Plata',
     postalCode: '7600'
   },
   {
-    productName: 'Membrana Líquida Venier Supercapa 1 Kg Blanco (SKU 1098)',
-    url: `${BASE_URL}/membrana-liquida-venier-supercapa-poliuretanica-1-kg/p?skuId=1098`,
+    productName: 'Látex Antihongo Denver 4 Lts',
+    url: `${BASE_URL}/latex-antihongo-denver-interior-exterior-4-lts/p`,
     zoneName: 'La Florida (Buenos Aires)',
     postalCode: '1879'
   }
@@ -135,27 +135,27 @@ async function auditCheckoutScenario(browser, scenario) {
   console.log(`🛒 --- MÓDULO 2 & 3: PDP + Checkout para ${scenarioTitle} ---`);
 
   try {
-    // 1. Navegar a la ficha de producto
+    // 1. Navegar a la PDP
     await page.goto(scenario.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // 2. Click en botón Comprar
+    // 2. Click en botón Comprar y esperar a que el orderForm procese la adición
     const buyButton = page.locator('.vtex-add-to-cart-button-0-x-buttonText, button:has-text("Comprar"), button:has-text("Agregar al carrito")').first();
     await buyButton.waitFor({ state: 'visible', timeout: 15000 });
-    
-    await Promise.all([
-      page.waitForResponse(res => res.url().includes('/orderForm') && res.status() === 200, { timeout: 15000 }).catch(() => null),
-      buyButton.click()
-    ]);
 
-    // 3. Ir a la vista de carrito
+    const orderFormPromise = page.waitForResponse(res => res.url().includes('/items') && res.status() === 200, { timeout: 15000 }).catch(() => null);
+    await buyButton.click();
+    await orderFormPromise;
+
+    // 3. Ir a checkout de forma limpia
     await page.goto(`${BASE_URL}/checkout/#/cart`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(1500);
-
-    // 4. Inyectar datos directamente en la API de VTEX
     await page.waitForFunction(() => typeof window.vtexjs !== 'undefined' && window.vtexjs.checkout, { timeout: 20000 });
+    await page.waitForTimeout(1000);
 
+    // 4. Inyectar datos con Código Postal formateado a 8 dígitos (00007600 / 00001879)
     const result = await page.evaluate(async (postalCode) => {
       try {
+        const formattedCp = String(postalCode).padStart(8, '0');
+
         await window.vtexjs.checkout.sendAttachment('clientProfileData', {
           email: 'auditoria_monitor@ingacot.com.ar',
           firstName: 'Auditor',
@@ -164,19 +164,30 @@ async function auditCheckoutScenario(browser, scenario) {
           phone: '+5492234000000'
         });
 
-        const orderForm = await window.vtexjs.checkout.sendAttachment('shippingData', {
+        let orderForm = await window.vtexjs.checkout.sendAttachment('shippingData', {
           selectedAddresses: [{
             addressType: 'residential',
-            postalCode: postalCode,
+            postalCode: formattedCp,
             country: 'ARG'
           }]
         });
 
-        const slas = orderForm?.shippingData?.logisticsInfo?.[0]?.slas || [];
+        let slas = orderForm?.shippingData?.logisticsInfo?.[0]?.slas || [];
+
+        // Si la cotización externa (Zipnova/OCA) demora, reintentar el cálculo
+        if (slas.length === 0) {
+          await new Promise(r => setTimeout(r, 2000));
+          orderForm = await window.vtexjs.checkout.calculateShipping({
+            postalCode: formattedCp,
+            country: 'ARG',
+            addressType: 'residential'
+          });
+          slas = orderForm?.shippingData?.logisticsInfo?.[0]?.slas || [];
+        }
+
         return {
           success: true,
-          slaCount: slas.length,
-          messages: orderForm.messages || []
+          slaCount: slas.length
         };
       } catch (err) {
         return { success: false, error: err.message };
@@ -187,11 +198,10 @@ async function auditCheckoutScenario(browser, scenario) {
       throw new Error(`Fallo al enviar datos a VTEX: ${result.error}`);
     }
 
-    // 5. Ir a la pantalla de envío para verificar visualmente
+    // 5. Ir a pantalla de envío para validar visualmente
     await page.goto(`${BASE_URL}/checkout/#/shipping`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(2000);
 
-    // 6. Validación de bloqueos
     const alertWarning = page.getByText(/El siguiente ítem no puede enviarse|no puede enviarse a este código postal/i);
     if (await alertWarning.isVisible()) {
       throw new Error(`Ítem bloqueado para CP ${scenario.postalCode} ("No puede enviarse a este código postal")`);
@@ -239,6 +249,7 @@ async function auditCheckoutScenario(browser, scenario) {
 
     for (const scenario of SCENARIOS) {
       await auditCheckoutScenario(browser, scenario);
+      await new Promise(r => setTimeout(r, 2000));
     }
   } catch (globalErr) {
     console.error('Error global en la ejecución:', globalErr);
