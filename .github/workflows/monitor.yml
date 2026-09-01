@@ -3,7 +3,8 @@ name: Monitor Checkout Ambito
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'
+    # Corre todos los días al minuto 17 de cada hora (evita la congestión del minuto :00)
+    - cron: '17 * * * *'
 
 jobs:
   check-checkout:
